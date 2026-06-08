@@ -15,21 +15,27 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 _COLS   = ("username", "status", "deleted", "note")
-_WIDTHS = {"username": 120, "status": 120, "deleted": 90, "note": 380}
+_WIDTHS = {"username": 120, "status": 140, "deleted": 90, "note": 380}
 
 
 class RemoverApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Student Remover")
-        self.geometry("860x580")
-        self.minsize(700, 420)
+        self.geometry("900x600")
+        self.minsize(700, 440)
 
         self._credentials: list = []
         self._row_iids: dict = {}
         self._results: list = []
         self._running = False
 
+        # Pause / resume support
+        self._pause_event = threading.Event()
+        self._pause_event.set()   # not paused initially
+        self._paused = False
+
+        # Bounce animation
         self._animating = False
         self._anim_val = 0.0
         self._anim_dir = 1
@@ -56,12 +62,19 @@ class RemoverApp(ctk.CTk):
                                           state="disabled", command=self._export_results)
         self._export_btn.grid(row=0, column=2, padx=(0, 8), pady=10)
 
+        self._pause_btn = ctk.CTkButton(
+            top, text="Pause", width=80,
+            fg_color="#e65100", hover_color="#bf360c",
+            state="disabled", command=self._toggle_pause,
+        )
+        self._pause_btn.grid(row=0, column=3, padx=(0, 8), pady=10)
+
         self._run_btn = ctk.CTkButton(
-            top, text="Remove All Students", width=180,
+            top, text="Remove All Students", width=190,
             fg_color="#c62828", hover_color="#8e0000",
             state="disabled", command=self._confirm_run,
         )
-        self._run_btn.grid(row=0, column=3, padx=(0, 12), pady=10)
+        self._run_btn.grid(row=0, column=4, padx=(0, 12), pady=10)
 
         # ── Results table ──────────────────────────────────────────────────
         tf = ctk.CTkFrame(self, corner_radius=8)
@@ -80,6 +93,7 @@ class RemoverApp(ctk.CTk):
             self._tree.column(c, width=_WIDTHS[c], anchor="w",
                               minwidth=40, stretch=(c == "note"))
         self._tree.tag_configure("running", foreground="#2196f3")
+        self._tree.tag_configure("paused",  foreground="#ff9800")
         self._tree.tag_configure("done",    foreground="#4caf50")
         self._tree.tag_configure("error",   foreground="#e05252")
 
@@ -138,7 +152,7 @@ class RemoverApp(ctk.CTk):
     def _confirm_run(self):
         n = len(self._credentials)
         answer = messagebox.askyesno(
-            "⚠️  Confirm Deletion",
+            "Confirm Deletion",
             f"You are about to remove ALL students from {n} school(s).\n\n"
             "This action CANNOT be undone.\n\n"
             "Are you absolutely sure?",
@@ -146,7 +160,6 @@ class RemoverApp(ctk.CTk):
         )
         if not answer:
             return
-        # double-confirm for safety
         answer2 = messagebox.askyesno(
             "Final Confirmation",
             f"Confirmed — delete all students from {n} school(s)?",
@@ -158,7 +171,10 @@ class RemoverApp(ctk.CTk):
 
     def _start_run(self):
         self._running = True
+        self._paused = False
+        self._pause_event.set()
         self._run_btn.configure(state="disabled", text="Running…")
+        self._pause_btn.configure(state="normal", text="Pause")
         self._export_btn.configure(state="disabled")
         self._populate_table()
         self._progress.set(0)
@@ -169,20 +185,40 @@ class RemoverApp(ctk.CTk):
                          args=(list(self._credentials),),
                          daemon=True).start()
 
+    def _toggle_pause(self):
+        if not self._running:
+            return
+        if self._paused:
+            # Resume
+            self._paused = False
+            self._pause_event.set()
+            self._pause_btn.configure(text="Pause", fg_color="#e65100", hover_color="#bf360c")
+            self._set_status("Resumed…")
+            self._start_bounce()
+        else:
+            # Pause
+            self._paused = True
+            self._pause_event.clear()
+            self._pause_btn.configure(text="Resume", fg_color="#388e3c", hover_color="#1b5e20")
+            self._animating = False
+            self._set_status("Paused — click Resume to continue.")
+
     def _worker(self, creds):
         total = len(creds)
         results = []
 
         for idx, (u, p) in enumerate(creds):
+            # Wait here if paused
+            self._pause_event.wait()
+
             self.after(0, self._set_row, u, "Logging in…", "—", "", "running")
             self._set_status_threadsafe(f"Processing {idx + 1} / {total} — {u}")
 
             try:
-                token = login(u, p)
+                token, school_id = login(u, p)
                 self.after(0, self._set_row, u, "Removing…", "—", "", "running")
-                result = remove_all_students(token)
+                result = remove_all_students(token, school_id)
 
-                # extract deleted count from whatever the server returns
                 deleted = _extract_count(result)
                 note    = str(result) if deleted is None else ""
                 deleted_str = str(deleted) if deleted is not None else "—"
@@ -203,13 +239,20 @@ class RemoverApp(ctk.CTk):
         summary = (f"Complete — {done_count}/{total} succeeded"
                    + (f", {error_count} failed" if error_count else ""))
 
-        self.after(0, self._stop_bounce)
-        self.after(0, self._set_status, summary,
-                   True if error_count else False)
-        self.after(0, self._run_btn.configure,
-                   {"state": "normal", "text": "Remove All Students"})
-        self.after(0, self._export_btn.configure, {"state": "normal"})
+        self.after(0, self._finish, summary, bool(error_count))
+
+    def _finish(self, summary, has_errors):
         self._running = False
+        self._paused = False
+        self._pause_event.set()
+        self._stop_bounce()
+        self._set_status(summary, has_errors)
+        self._run_btn.configure(state="normal", text="Remove All Students")
+        self._pause_btn.configure(
+            state="disabled", text="Pause",
+            fg_color="#e65100", hover_color="#bf360c",
+        )
+        self._export_btn.configure(state="normal")
 
     def _export_results(self):
         if not self._results:
@@ -268,7 +311,6 @@ class RemoverApp(ctk.CTk):
 # ── Utility functions ─────────────────────────────────────────────────────────
 
 def _extract_count(result) -> int | None:
-    """Try to find a numeric deleted/removed count in the server result."""
     if isinstance(result, int):
         return result
     if isinstance(result, dict):
@@ -279,7 +321,6 @@ def _extract_count(result) -> int | None:
                     return int(result[key])
                 except (TypeError, ValueError):
                     pass
-        # fallback: first numeric value
         for v in result.values():
             try:
                 return int(v)

@@ -9,7 +9,8 @@ _HEADERS = {
 }
 
 
-def login(username: str, password: str) -> str:
+def login(username: str, password: str) -> tuple:
+    """Returns (session_token, school_id)."""
     resp = requests.post(
         f"{SERVER}/login",
         json={"username": username, "password": password},
@@ -22,17 +23,18 @@ def login(username: str, password: str) -> str:
     token = data.get("sessionToken", "")
     if not token:
         raise ValueError("No session token received.")
-    return token
+    school_id = _extract_school_id(data)
+    return token, school_id
 
 
-def remove_all_students(session_token: str) -> dict:
+def remove_all_students(session_token: str, school_id: str) -> dict:
     """
-    Calls the removeAllStudent cloud function.
+    Calls removeAllStudent cloud function with className: Students_<school_id>.
     Returns the raw result dict from the server.
     """
     resp = requests.post(
         f"{SERVER}/functions/removeAllStudent",
-        json={},
+        json={"className": f"Students_{school_id}"},
         headers={**_HEADERS, "X-Parse-Session-Token": session_token},
         timeout=60,
     )
@@ -40,6 +42,16 @@ def remove_all_students(session_token: str) -> dict:
     if "error" in data:
         raise ValueError(data["error"])
     return data.get("result", data)
+
+
+def _extract_school_id(data: dict) -> str:
+    field = data.get("schoolId")
+    if isinstance(field, list) and field:
+        entry = field[0]
+        return entry.get("objectId", "") if isinstance(entry, dict) else ""
+    if isinstance(field, dict):
+        return field.get("objectId", "")
+    return str(field or "")
 
 
 def _json(resp) -> dict:
