@@ -27,11 +27,25 @@ def login(username: str, password: str) -> tuple:
     return token, school_id
 
 
+def count_students(session_token: str, school_id: str) -> int:
+    """Returns the current student count for the school (0 if class doesn't exist)."""
+    resp = requests.get(
+        f"{SERVER}/classes/Students_{school_id}",
+        headers={**_HEADERS, "X-Parse-Session-Token": session_token},
+        params={"limit": 0, "count": 1},
+        timeout=15,
+    )
+    data = _json(resp)
+    return int(data.get("count", 0))
+
+
 def remove_all_students(session_token: str, school_id: str) -> dict:
     """
-    Calls removeAllStudent cloud function with className: Students_<school_id>.
-    Returns the raw result dict from the server.
+    Fetches student count first, then calls removeAllStudent cloud function.
+    Returns dict with 'deleted' key containing the pre-deletion count.
     """
+    before = count_students(session_token, school_id)
+
     resp = requests.post(
         f"{SERVER}/functions/removeAllStudent",
         json={"className": f"Students_{school_id}"},
@@ -41,7 +55,31 @@ def remove_all_students(session_token: str, school_id: str) -> dict:
     data = _json(resp)
     if "error" in data:
         raise ValueError(data["error"])
-    return data.get("result", data)
+
+    result = data.get("result", data)
+
+    # If server returned a count use it, otherwise use pre-deletion count
+    server_count = _extract_count(result)
+    return {"deleted": server_count if server_count is not None else before}
+
+
+def _extract_count(result) -> int | None:
+    if isinstance(result, int):
+        return result
+    if isinstance(result, dict):
+        for key in ("deleted", "removed", "count", "total", "studentDeleted",
+                    "studentsDeleted", "deletedCount"):
+            if key in result:
+                try:
+                    return int(result[key])
+                except (TypeError, ValueError):
+                    pass
+        for v in result.values():
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                pass
+    return None
 
 
 def _extract_school_id(data: dict) -> str:

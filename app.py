@@ -8,7 +8,7 @@ import customtkinter as ctk
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-from remover import login, remove_all_students
+from remover import login, remove_all_students, _extract_count
 from batch_reader import read_credentials
 
 ctk.set_appearance_mode("System")
@@ -309,25 +309,6 @@ class RemoverApp(ctk.CTk):
 
 
 # ── Utility functions ─────────────────────────────────────────────────────────
-
-def _extract_count(result) -> int | None:
-    if isinstance(result, int):
-        return result
-    if isinstance(result, dict):
-        for key in ("deleted", "removed", "count", "total", "studentDeleted",
-                    "studentsDeleted", "deletedCount"):
-            if key in result:
-                try:
-                    return int(result[key])
-                except (TypeError, ValueError):
-                    pass
-        for v in result.values():
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                pass
-    return None
-
 
 def _write_results(results: list, path: str):
     wb = openpyxl.Workbook()
